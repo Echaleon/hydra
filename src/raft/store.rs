@@ -27,7 +27,7 @@ pub fn state_read_error<E: std::error::Error + 'static>(e: E) -> StorageError {
         ErrorVerb::Read,
         AnyError::from(&e),
     )
-    .into()
+        .into()
 }
 
 // Map a kv error to a storage error.
@@ -37,7 +37,7 @@ pub fn state_write_error<E: std::error::Error + 'static>(e: E) -> StorageError {
         ErrorVerb::Write,
         AnyError::from(&e),
     )
-    .into()
+        .into()
 }
 
 // Map a kv error to a storage error.
@@ -107,24 +107,18 @@ impl TryFrom<&InternalStateMachine> for SerializableStateMachine {
             last_applied_log: sm.last_applied_log()?,
             last_membership: sm.last_membership()?,
             data: {
-                // Open the data bucket.
-                let data = sm
-                    .db
+                sm.db
                     .bucket::<String, String>(Some("data"))
-                    .map_err(storage_read_error)?;
-
-                // Iterate over all the keys in the data bucket.
-                let mut tree = BTreeMap::new();
-                for item in data.iter() {
-                    // Get the key and value.
-                    let item = item.map_err(storage_read_error)?;
-                    // Insert the key and value into the tree.
-                    tree.insert(
-                        item.key().map_err(storage_read_error)?,
-                        item.value().map_err(storage_read_error)?,
-                    );
-                }
-                tree
+                    .map_err(storage_read_error)?
+                    .iter()
+                    .map(|item| {
+                        let item = item.map_err(storage_read_error)?;
+                        Ok((
+                            item.key().map_err(storage_read_error)?,
+                            item.value().map_err(storage_read_error)?,
+                        ))
+                    })
+                    .collect::<Result<BTreeMap<String, String>, StorageError>>()?
             },
         })
     }
@@ -236,10 +230,9 @@ impl InternalStateMachine {
             .bucket::<String, String>(Some("data"))
             .map_err(storage_write_error)?;
 
-        // Insert the data from the serializable state machine into the key-value store.
-        for (key, value) in sm.data {
-            bucket.set(&key, &value).map_err(storage_write_error)?;
-        }
+        sm.data.iter().try_for_each(|(key, value)| {
+            bucket.set(key, value).map_err(storage_write_error).map(|_| ())
+        })?;
 
         let mut internal_sm = Self { db: db.clone() };
 
@@ -306,13 +299,12 @@ impl Store {
             .map_err(storage_write_error)
             .map(|_| ())
     }
-}
 
-#[async_trait]
-impl RaftLogReader<TypeConfig> for Store {
-    async fn get_log_state(&mut self) -> StorageResult<LogState<TypeConfig>> {
-        // Open the log bucket and get the last log index, deserializing it if it exists.
-        let last_log_index = self
+    // Get the last log id.
+    pub fn last_log_id(&self) -> StorageResult<Option<LogId<NodeId>>> {
+        // Get the last log id from the key-value store. Try to deserialize it. Otherwise, return
+        // the default.
+        self
             .db
             .bucket::<Integer, String>(Some("log"))
             .map_err(logs_read_error)?
@@ -325,11 +317,19 @@ impl RaftLogReader<TypeConfig> for Store {
                         serde_json::from_str::<Entry<TypeConfig>>(
                             &x.value::<String>().map_err(logs_read_error)?,
                         )
-                        .map_err(logs_read_error)?
-                        .log_id,
+                            .map_err(logs_read_error)?
+                            .log_id,
                     ))
                 },
-            )?;
+            )
+    }
+}
+
+#[async_trait]
+impl RaftLogReader<TypeConfig> for Store {
+    async fn get_log_state(&mut self) -> StorageResult<LogState<TypeConfig>> {
+        // Open the log bucket and get the last log index, deserializing it if it exists.
+        let last_log_index = self.last_log_id()?;
 
         // Get the last purged log id.
         let last_purged_log_id = self.get_meta::<meta::LastPurged>()?;
@@ -353,14 +353,15 @@ impl RaftLogReader<TypeConfig> for Store {
         let end = match range.end_bound() {
             Bound::Included(x) => x + 1,
             Bound::Excluded(x) => *x,
-            Bound::Unbounded => (self
-                .db
-                .bucket::<Integer, String>(Some("log"))
-                .map_err(logs_read_error)?
-                .len() + 1) as u64,
+            Bound::Unbounded => {
+                (self
+                    .db
+                    .bucket::<Integer, String>(Some("log"))
+                    .map_err(logs_read_error)?
+                    .len()
+                    + 1) as u64
+            }
         };
-
-        tracing::info!("start: {}, end: {}", start, end);
 
         self.db
             .bucket::<Integer, String>(Some("log"))
@@ -373,7 +374,7 @@ impl RaftLogReader<TypeConfig> for Store {
                         .value::<String>()
                         .map_err(logs_read_error)?,
                 )
-                .map_err(logs_read_error)
+                    .map_err(logs_read_error)
             })
             .collect()
     }
@@ -401,7 +402,10 @@ impl RaftSnapshotBuilder<TypeConfig, SnapshotList> for Store {
 
         // Format the actual snapshot id.
         let snapshot_id = if let Some(last_applied_log) = last_applied_log {
-            format!("{}-{}-{}", last_applied_log.leader_id, last_applied_log.index, snapshot_id)
+            format!(
+                "{}-{}-{}",
+                last_applied_log.leader_id, last_applied_log.index, snapshot_id
+            )
         } else {
             format!("--{}", snapshot_id)
         };
@@ -448,19 +452,21 @@ impl RaftStorage<TypeConfig> for Store {
 
     #[tracing::instrument(level = "trace", skip(self, entries))]
     async fn append_to_log(&mut self, entries: &[&Entry<TypeConfig>]) -> StorageResult<()> {
-        for entry in entries {
-            tracing::info!(?entry, "Appending entry to log");
-            // Serialize the entry.
-            let serialized_entry = serde_json::to_string(entry).map_err(logs_write_error)?;
+        // Create a batch.
+        let mut batch = kv::Batch::<Integer, String>::new();
 
-            // Insert the entry into the log bucket.
-            self.db
-                .bucket::<Integer, String>(Some("log"))
-                .map_err(logs_write_error)?
-                .set(&Integer::from(entry.log_id.index), &serialized_entry)
-                .map_err(logs_write_error)?;
-        }
-        Ok(())
+        // Serialize the entries and add them to the batch.
+        entries.iter().try_for_each(|entry| {
+            let serialized_entry = serde_json::to_string(entry)?;
+            batch.set(&Integer::from(entry.log_id.index), &serialized_entry)
+        }).map_err(storage_write_error)?;
+
+        // Insert the batch into the log bucket.
+        self.db
+            .bucket::<Integer, String>(Some("log"))
+            .map_err(logs_write_error)?
+            .batch(batch)
+            .map_err(logs_write_error)
     }
 
     #[tracing::instrument(level = "debug", skip(self))]
@@ -468,24 +474,7 @@ impl RaftStorage<TypeConfig> for Store {
         tracing::debug!(?log_id, "Deleting conflict logs since log id");
 
         // Get the id of the last log entry.
-        let last_log_id = self
-            .db
-            .bucket::<Integer, String>(Some("log"))
-            .map_err(logs_read_error)?
-            .last()
-            .map_err(logs_read_error)?
-            .map_or_else(
-                || Ok::<_, StorageError>(None),
-                |x| {
-                    Ok(Some(
-                        serde_json::from_str::<Entry<TypeConfig>>(
-                            &x.value::<String>().map_err(logs_read_error)?,
-                        )
-                        .map_err(logs_read_error)?
-                        .log_id,
-                    ))
-                },
-            )?;
+        let last_log_id = self.last_log_id()?;
 
         // If the last log id doesn't exist, or is less than the log id to delete, return. Otherwise,
         // unwrap the last log id.
@@ -513,8 +502,6 @@ impl RaftStorage<TypeConfig> for Store {
 
     #[tracing::instrument(level = "debug", skip(self))]
     async fn purge_logs_upto(&mut self, log_id: LogId<NodeId>) -> StorageResult<()> {
-        tracing::info!(?log_id, "Purging logs upto log id");
-
         // Create a new batch.
         let mut batch = kv::Batch::<Integer, String>::new();
 
@@ -548,34 +535,32 @@ impl RaftStorage<TypeConfig> for Store {
         &mut self,
         entries: &[&Entry<TypeConfig>],
     ) -> StorageResult<Vec<Response>> {
-        let mut responses = Vec::with_capacity(entries.len());
-
+        // Get a write lock on the state machine.
         let mut state_machine = self.sm.write().await;
 
-        for entry in entries {
+        // Iterate over the entries and apply them to the state machine.
+        entries.iter().map(|entry| {
             tracing::debug!(%entry.log_id, "Replicating entry to state machine");
 
             state_machine.set_last_applied_log(entry.log_id)?;
 
             match entry.payload {
-                EntryPayload::Blank => responses.push(Response { value: None }),
+                EntryPayload::Blank => Ok(Response { value: None }),
                 EntryPayload::Normal(ref request) => {
                     state_machine.set(request.key.clone(), request.value.clone())?;
-                    responses.push(Response {
+                    Ok(Response {
                         value: Some(request.value.clone()),
-                    });
+                    })
                 }
                 EntryPayload::Membership(ref membership) => {
                     state_machine.set_last_membership(StoredMembership::new(
                         Some(entry.log_id),
                         membership.clone(),
                     ))?;
-                    responses.push(Response { value: None });
+                    Ok(Response { value: None })
                 }
             }
-        }
-
-        Ok(responses)
+        }).collect()
     }
 
     async fn get_snapshot_builder(&mut self) -> Self::SnapshotBuilder {
@@ -602,8 +587,8 @@ impl RaftStorage<TypeConfig> for Store {
 
         // Update the state machine, but only hold the lock as long as necessary
         {
-            let new_state_machine: SerializableStateMachine = serde_json::from_slice(&new_snapshot.data)
-                .map_err(state_read_error)?;
+            let new_state_machine: SerializableStateMachine =
+                serde_json::from_slice(&new_snapshot.data).map_err(state_read_error)?;
             let mut state_machine = self.sm.write().await;
             *state_machine = InternalStateMachine::from_serializable(new_state_machine, &self.db)?;
         }
@@ -647,8 +632,11 @@ mod meta {
     }
 
     pub struct LastPurged;
+
     pub struct SnapshotIndex;
+
     pub struct Vote;
+
     pub struct Snapshot;
 
     impl StoreMetadata for LastPurged {
