@@ -1,0 +1,20 @@
+[package]
+name = "hydra"
+version = "0.1.0"
+edition = "2021"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+anyhow = "1.0.71"
+axum = "0.6.18"
+axum-server = "0.4.7"
+clap = { version = "4.2.7", features = ["derive", "wrap_help"] }
+kv = { version = "0.24.0", features = ["json-value", "bincode-value", "compression"] }
+openraft = { version = "0.8.3", features = ["serde"] }
+serde = { version = "1.0.160", features = ["derive"] }
+serde_json = "1.0.64"
+tokio = { version = "1.28.0", features = ["full"] }
+tracing = "0.1.37"
+tracing-appender = "0.2.2"
+tracing-subscriber = "0.3.17"
