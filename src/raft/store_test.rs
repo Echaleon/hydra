@@ -39,10 +39,5 @@ pub fn test_store() -> Result<(), StorageError> {
         .with_writer(non_blocking)
         .init();
 
-    // let builder = Builder {};
-
-    // let rt = tokio::runtime::Runtime::new().unwrap();
-
-    // rt.block_on(builder.run_test(openraft::testing::Suite::<TypeConfig, Store, Builder>::append_to_log))
     openraft::testing::Suite::test_all(Builder {})
 }

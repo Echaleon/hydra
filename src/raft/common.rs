@@ -2,12 +2,12 @@ use std::io::Cursor;
 
 use serde::{Deserialize, Serialize};
 
-use crate::raft::store::{Request, Response};
-
 pub type NodeId = u64;
 pub type SnapshotList = Cursor<Vec<u8>>;
 
+
 openraft::declare_raft_types!(
+    #[derive(Serialize, Deserialize)]
     pub TypeConfig: D = Request, R = Response, NodeId = NodeId, Node = Node
 );
 
@@ -26,4 +26,19 @@ impl Default for Node {
             addr: SocketAddr::new(IpAddr::V4(Ipv4Addr::new(0, 0, 0, 0)), 0),
         }
     }
+}
+
+// ------ Storage Interface ------ //
+
+// Data stored into the key-value store is a string and associated json data.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Request {
+    pub key: String,
+    pub value: String,
+}
+
+// Data returned from the key-value store is the associated json data.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Response {
+    pub value: Option<String>,
 }

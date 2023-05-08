@@ -14,7 +14,7 @@ use openraft::{
 use serde::{Deserialize, Serialize};
 use tokio::sync::RwLock;
 
-use crate::raft::common::{Node, NodeId, SnapshotList, TypeConfig};
+use crate::raft::common::{Node, NodeId, SnapshotList, Response, TypeConfig};
 
 // ------ Error Helpers ------ //
 pub type StorageResult<T> = Result<T, StorageError>;
@@ -58,21 +58,6 @@ pub fn logs_read_error<E: std::error::Error + 'static>(e: E) -> StorageError {
 // Map a kv error to a storage error.
 pub fn logs_write_error<E: std::error::Error + 'static>(e: E) -> StorageError {
     StorageIOError::new(ErrorSubject::Logs, ErrorVerb::Write, AnyError::from(&e)).into()
-}
-
-// ------ Storage Interface ------ //
-
-// Data stored into the key-value store is a string and associated json data.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct Request {
-    pub key: String,
-    pub value: String,
-}
-
-// Data returned from the key-value store is the associated json data.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct Response {
-    pub value: Option<String>,
 }
 
 // ------ Snapshot ------ //
@@ -126,7 +111,7 @@ impl TryFrom<&InternalStateMachine> for SerializableStateMachine {
 
 // The internal state machine is what actually stores the data and interacts with the key-value
 // store.
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct InternalStateMachine {
     pub db: kv::Store,
 }
@@ -251,7 +236,7 @@ impl InternalStateMachine {
 // ------ Store ------ //
 
 // The actual store where the data is stored.
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct Store {
     pub db: kv::Store,
     pub sm: Arc<RwLock<InternalStateMachine>>,
