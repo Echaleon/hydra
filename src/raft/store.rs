@@ -159,21 +159,25 @@ impl InternalStateMachine {
     }
 
     // Set the last membership.
-    pub fn set_last_membership(
+    pub async fn set_last_membership(
         &mut self,
         membership: StoredMembership<NodeId, Node>,
     ) -> StorageResult<()> {
-        // Set the last membership in the key-value store. Serialize it first. Throw out the
-        // return if it
-        self.db
+        let bucket = self
+            .db
             .bucket::<String, String>(Some("state_machine"))
-            .map_err(state_write_error)?
+            .map_err(state_write_error)?;
+
+        // Set the last membership in the key-value store. Serialize it first.
+        bucket
             .set(
                 &String::from("last_membership"),
                 &serde_json::to_string(&membership).map_err(state_write_error)?,
             )
-            .map_err(state_write_error)
-            .map(|_| ())
+            .map_err(state_write_error)?;
+
+        bucket.flush_async().await.map_err(state_write_error)?;
+        Ok(())
     }
 
     // Get the last applied log.
@@ -194,22 +198,34 @@ impl InternalStateMachine {
     }
 
     // Set the last applied log.
-    pub fn set_last_applied_log(&mut self, last_applied_log: LogId<NodeId>) -> StorageResult<()> {
+    pub async fn set_last_applied_log(
+        &mut self,
+        last_applied_log: LogId<NodeId>,
+    ) -> StorageResult<()> {
+        let bucket = self
+            .db
+            .bucket::<String, String>(Some("state_machine"))
+            .map_err(state_write_error)?;
+
         // Set the last applied log in the key-value store. Serialize it first. Throw out the
         // return if it
-        self.db
-            .bucket::<String, String>(Some("state_machine"))
-            .map_err(state_write_error)?
+        bucket
             .set(
                 &String::from("last_applied_log"),
                 &serde_json::to_string(&last_applied_log).map_err(state_write_error)?,
             )
-            .map_err(state_write_error)
-            .map(|_| ())
+            .map_err(state_write_error)?;
+
+        bucket.flush_async().await.map_err(state_write_error)?;
+
+        Ok(())
     }
 
     // Turn a serializable state machine into an internal state machine.
-    pub fn from_serializable(sm: SerializableStateMachine, db: &kv::Store) -> StorageResult<Self> {
+    pub async fn from_serializable(
+        sm: SerializableStateMachine,
+        db: &kv::Store,
+    ) -> StorageResult<Self> {
         // Open the data bucket.
         let bucket = db
             .bucket::<String, String>(Some("data"))
@@ -222,15 +238,17 @@ impl InternalStateMachine {
                 .map(|_| ())
         })?;
 
+        bucket.flush_async().await.map_err(storage_write_error)?;
+
         let mut internal_sm = Self { db: db.clone() };
 
         // Set the last applied log.
         if let Some(last_applied_log) = sm.last_applied_log {
-            internal_sm.set_last_applied_log(last_applied_log)?;
+            internal_sm.set_last_applied_log(last_applied_log).await?;
         }
 
         // Set the last membership.
-        internal_sm.set_last_membership(sm.last_membership)?;
+        internal_sm.set_last_membership(sm.last_membership).await?;
 
         Ok(internal_sm)
     }
@@ -274,18 +292,23 @@ impl Store {
     }
 
     // Set the meta data in the store.
-    pub fn set_meta<M: meta::StoreMetadata>(&mut self, meta: &M::Value) -> StorageResult<()> {
+    pub async fn set_meta<M: meta::StoreMetadata>(&mut self, meta: &M::Value) -> StorageResult<()> {
+        let bucket = self
+            .db
+            .bucket::<String, String>(Some("meta"))
+            .map_err(storage_write_error)?;
         // Set the meta data in the key-value store. Serialize it first. Throw out the return if
         // it fails.
-        self.db
-            .bucket::<String, String>(Some("meta"))
-            .map_err(storage_write_error)?
+        bucket
             .set(
                 &String::from(M::KEY),
                 &serde_json::to_string(&meta).map_err(storage_write_error)?,
             )
-            .map_err(storage_write_error)
-            .map(|_| ())
+            .map_err(storage_write_error)?;
+
+        bucket.flush_async().await.map_err(storage_write_error)?;
+
+        Ok(())
     }
 
     // Get the last log id.
@@ -385,7 +408,7 @@ impl RaftSnapshotBuilder<TypeConfig, SnapshotList> for Store {
 
         // Increment the snapshot index.
         let snapshot_id = self.get_meta::<meta::SnapshotIndex>()?.unwrap_or_default() + 1;
-        self.set_meta::<meta::SnapshotIndex>(&snapshot_id)?;
+        self.set_meta::<meta::SnapshotIndex>(&snapshot_id).await?;
 
         // Format the actual snapshot id.
         let snapshot_id = if let Some(last_applied_log) = last_applied_log {
@@ -409,7 +432,7 @@ impl RaftSnapshotBuilder<TypeConfig, SnapshotList> for Store {
             data,
         };
 
-        self.set_meta::<meta::Snapshot>(&snapshot)?;
+        self.set_meta::<meta::Snapshot>(&snapshot).await?;
 
         Ok(Snapshot {
             meta,
@@ -426,7 +449,7 @@ impl RaftStorage<TypeConfig> for Store {
 
     #[tracing::instrument(level = "trace", skip(self))]
     async fn save_vote(&mut self, vote: &Vote<NodeId>) -> StorageResult<()> {
-        self.set_meta::<meta::Vote>(vote)
+        self.set_meta::<meta::Vote>(vote).await
     }
 
     async fn read_vote(&mut self) -> StorageResult<Option<Vote<NodeId>>> {
@@ -507,7 +530,7 @@ impl RaftStorage<TypeConfig> for Store {
             .map_err(logs_write_error)?;
 
         // Update the last purged log id.
-        self.set_meta::<meta::LastPurged>(&log_id)
+        self.set_meta::<meta::LastPurged>(&log_id).await
     }
 
     async fn last_applied_state(
@@ -528,32 +551,36 @@ impl RaftStorage<TypeConfig> for Store {
         // Get a write lock on the state machine.
         let mut state_machine = self.sm.write().await;
 
+        // Allocate a vector to hold the responses.
+        let mut responses = Vec::with_capacity(entries.len());
+
         // Iterate over the entries and apply them to the state machine.
-        entries
-            .iter()
-            .map(|entry| {
-                tracing::debug!(%entry.log_id, "Replicating entry to state machine");
+        for entry in entries {
+            tracing::debug!(%entry.log_id, "Replicating entry to state machine");
 
-                state_machine.set_last_applied_log(entry.log_id)?;
+            state_machine.set_last_applied_log(entry.log_id).await?;
 
-                match entry.payload {
-                    EntryPayload::Blank => Ok(Response { value: None }),
-                    EntryPayload::Normal(ref request) => {
-                        state_machine.set(request.key.clone(), request.value.clone())?;
-                        Ok(Response {
-                            value: Some(request.value.clone()),
-                        })
-                    }
-                    EntryPayload::Membership(ref membership) => {
-                        state_machine.set_last_membership(StoredMembership::new(
-                            Some(entry.log_id),
-                            membership.clone(),
-                        ))?;
-                        Ok(Response { value: None })
+            responses.push(match entry.payload {
+                EntryPayload::Blank => Response { value: None },
+                EntryPayload::Normal(ref request) => {
+                    state_machine.set(request.key.clone(), request.value.clone())?;
+                    Response {
+                        value: Some(request.value.clone()),
                     }
                 }
-            })
-            .collect()
+                EntryPayload::Membership(ref membership) => {
+                    state_machine
+                        .set_last_membership(StoredMembership::new(
+                            Some(entry.log_id),
+                            membership.clone(),
+                        ))
+                        .await?;
+                    Response { value: None }
+                }
+            });
+        }
+
+        Ok(responses)
     }
 
     async fn get_snapshot_builder(&mut self) -> Self::SnapshotBuilder {
@@ -583,11 +610,12 @@ impl RaftStorage<TypeConfig> for Store {
             let new_state_machine: SerializableStateMachine =
                 serde_json::from_slice(&new_snapshot.data).map_err(state_read_error)?;
             let mut state_machine = self.sm.write().await;
-            *state_machine = InternalStateMachine::from_serializable(new_state_machine, &self.db)?;
+            *state_machine =
+                InternalStateMachine::from_serializable(new_state_machine, &self.db).await?;
         }
 
         // Update the meta data
-        self.set_meta::<meta::Snapshot>(&new_snapshot)?;
+        self.set_meta::<meta::Snapshot>(&new_snapshot).await?;
 
         Ok(())
     }
