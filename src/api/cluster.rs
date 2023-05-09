@@ -144,4 +144,9 @@ impl Cluster {
             .graceful_shutdown(Option::from(std::time::Duration::from_secs(5)));
         Ok(())
     }
+    
+    #[export_method]
+    pub async fn ping(&self, _: Option<u8>) -> Result<(), toy_rpc::Error> {
+        Ok(())
+    }
 }

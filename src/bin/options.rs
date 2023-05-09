@@ -4,6 +4,10 @@ use clap::Args;
 
 #[derive(Debug, Args)]
 pub struct ClusterOpts {
+    /// Path to the hydra binary, if not in PATH.
+    #[clap(long = "hydrabin")]
+    pub path: Option<std::path::PathBuf>,
+
     /// Flag for verbose output. By default, errors, warnings, and info messages are printed. If
     /// specified once, debug messages are printed. If specified twice, trace messages are printed.
     /// Overrides the quiet flag. This gets passed to the server.
@@ -40,6 +44,10 @@ pub struct ClusterOpts {
 
 #[derive(Debug, Args)]
 pub struct StartOpts {
+    /// Path to the hydra binary, if not in PATH.
+    #[clap(long = "hydrabin")]
+    pub path: Option<std::path::PathBuf>,
+
     /// Flag for verbose output. By default, errors, warnings, and info messages are printed. If
     /// specified once, debug messages are printed. If specified twice, trace messages are printed.
     /// Overrides the quiet flag. This gets passed to the server.
@@ -75,10 +83,13 @@ pub struct StartOpts {
 
 #[derive(Debug, Args)]
 pub struct InitOpts {
+    /// Address of a current node in the cluster.
+    pub current_node: SocketAddr,
+
     /// Network nodes and addresses to add to the cluster. This should be a list of
     /// node IDs and addresses, e.g. "1,127.0.0.1:9000 2,127.0.0.1:9001 3,127.0.0.1:9002".
+    /// If not specified, the current node is added as the only node in the cluster.
     #[arg(value_parser = parse_node)]
-    #[arg(required = true)]
     pub nodes: Vec<Node>,
 }
 
@@ -105,6 +116,18 @@ pub struct ChangeOpts {
 
 #[derive(Debug, Args)]
 pub struct MetricsOpts {
+    /// Address of a node in the cluster.
+    pub node: SocketAddr,
+}
+
+#[derive(Debug, Args)]
+pub struct ShutdownOpts {
+    /// Address of a node in the cluster.
+    pub node: SocketAddr,
+}
+
+#[derive(Debug, Args)]
+pub struct PingOpts {
     /// Address of a node in the cluster.
     pub node: SocketAddr,
 }
