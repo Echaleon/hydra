@@ -6,16 +6,54 @@ use openraft::raft::{
     VoteRequest, VoteResponse,
 };
 use toy_rpc::macros::export_impl;
+use serde::{Deserialize, Serialize};
+use std::io::Cursor;
 
-use crate::raft::common::{Node, NodeId, TypeConfig};
 use crate::raft::store::Store;
 
-pub mod common;
 pub mod network;
 pub mod store;
 
 #[cfg(test)]
 mod store_test;
+
+openraft::declare_raft_types!(
+    #[derive(Serialize, Deserialize)]
+    pub TypeConfig: D = Request, R = Response, NodeId = NodeId, Node = Node
+);
+
+pub type NodeId = u64;
+pub type SnapshotList = Cursor<Vec<u8>>;
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Node {
+    pub id: NodeId,
+    pub addr: std::net::SocketAddr,
+}
+
+// Just create a node with an id of 0 and an address of 0.0.0.0:0.
+impl Default for Node {
+    fn default() -> Self {
+        use std::net::{IpAddr, Ipv4Addr, SocketAddr};
+        Self {
+            id: 0,
+            addr: SocketAddr::new(IpAddr::V4(Ipv4Addr::new(0, 0, 0, 0)), 0),
+        }
+    }
+}
+
+// Data stored into the key-value store is a string and associated json data.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Request {
+    pub key: String,
+    pub value: String,
+}
+
+// Data returned from the key-value store is the associated json data.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Response {
+    pub value: Option<String>,
+}
 
 #[derive(Clone)]
 pub struct Raft {

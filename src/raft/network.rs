@@ -2,7 +2,7 @@ use std::any::Any;
 use std::fmt::Display;
 
 use axum::async_trait;
-use openraft::error::{InstallSnapshotError, NetworkError, RPCError, RaftError, RemoteError};
+use openraft::error::{InstallSnapshotError, NetworkError, RaftError, RemoteError, RPCError};
 use openraft::raft::{
     AppendEntriesRequest, AppendEntriesResponse, InstallSnapshotRequest, InstallSnapshotResponse,
     VoteRequest, VoteResponse,
@@ -12,8 +12,7 @@ use serde::de::DeserializeOwned;
 use toy_rpc::pubsub::AckModeNone;
 use toy_rpc::Client;
 
-use crate::raft::common::{Node, NodeId, TypeConfig};
-use crate::raft::RaftClientStub;
+use crate::raft::{Node, NodeId, RaftClientStub, TypeConfig};
 
 // ------ Network ------ //
 
@@ -28,7 +27,7 @@ impl RaftNetworkFactory<TypeConfig> for Network {
     async fn new_client(&mut self, _target: NodeId, node: &Node) -> Self::Network {
         NetworkConnection {
             target: node.clone(),
-            connection: Client::dial_http(&format!("ws://{}/raft", node.addr))
+            connection: Client::dial_http(&format!("ws://{}/raft/", node.addr))
                 .await
                 .map_or_else(
                     |e| {
@@ -54,7 +53,7 @@ impl NetworkConnection {
         &mut self,
     ) -> Result<&Client<AckModeNone>, RPCError<NodeId, Node, E>> {
         if self.connection.is_none() {
-            self.connection = Client::dial_http(&format!("ws://{}/raft", self.target.addr))
+            self.connection = Client::dial_http(&format!("ws://{}/raft/", self.target.addr))
                 .await
                 .map_or_else(
                 |e| {

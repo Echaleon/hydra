@@ -3,8 +3,8 @@ use std::future::Future;
 use axum::async_trait;
 use openraft::testing::StoreBuilder;
 
-use crate::raft::common::TypeConfig;
 use crate::raft::store::{storage_read_error, StorageError, Store};
+use crate::raft::TypeConfig;
 
 struct Builder;
 

@@ -105,14 +105,15 @@ async fn main() {
         }
     };
 
-    // Create the RPC server and router.
-    let raft = Arc::new(raft);
-    let raft_server = toy_rpc::Server::builder().register(raft.clone()).build();
-    let router = router(raft_server, raft);
-
     // Create the shutdown handler.
     let shutdown_handle = axum_server::Handle::new();
     tokio::spawn(shutdown(shutdown_handle.clone()));
+
+    // Create the RPC server and router.
+    let raft = Arc::new(raft);
+    let raft_server = toy_rpc::Server::builder().register(raft.clone()).build();
+    let router = router(raft_server, raft, shutdown_handle.clone());
+
 
     // Start the node and await for it to exit.
     tracing::info!("Starting node on {}", opts.bind);
@@ -131,10 +132,10 @@ async fn main() {
 }
 
 // Create the router.
-fn router(server: Server<AckModeNone>, raft: Arc<raft::Raft>) -> Router {
+fn router(server: Server<AckModeNone>, raft: Arc<raft::Raft>, handle: axum_server::Handle) -> Router {
     Router::new()
-        .route_service("/raft", server.handle_http())
-        .merge(api::api(raft))
+        .nest_service("/raft", server.handle_http())
+        .merge(api::api(raft, handle))
 }
 
 // Shutdown handler

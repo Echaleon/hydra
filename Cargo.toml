@@ -7,7 +7,11 @@ edition = "2021"
 
 [[bin]]
 name = "hydra"
-path = "src/bin/main.rs"
+path = "src/bin/server.rs"
+
+[[bin]]
+name = "hydra-cli"
+path = "src/bin/cli.rs"
 
 [dependencies]
 anyhow = "1.0.71"

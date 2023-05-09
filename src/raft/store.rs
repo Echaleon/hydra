@@ -14,7 +14,7 @@ use openraft::{
 use serde::{Deserialize, Serialize};
 use tokio::sync::RwLock;
 
-use crate::raft::common::{Node, NodeId, SnapshotList, Response, TypeConfig};
+use crate::raft::{Node, NodeId, Response, SnapshotList, TypeConfig};
 
 // ------ Error Helpers ------ //
 pub type StorageResult<T> = Result<T, StorageError>;
@@ -27,7 +27,7 @@ pub fn state_read_error<E: std::error::Error + 'static>(e: E) -> StorageError {
         ErrorVerb::Read,
         AnyError::from(&e),
     )
-        .into()
+    .into()
 }
 
 // Map a kv error to a storage error.
@@ -37,7 +37,7 @@ pub fn state_write_error<E: std::error::Error + 'static>(e: E) -> StorageError {
         ErrorVerb::Write,
         AnyError::from(&e),
     )
-        .into()
+    .into()
 }
 
 // Map a kv error to a storage error.
@@ -216,7 +216,10 @@ impl InternalStateMachine {
             .map_err(storage_write_error)?;
 
         sm.data.iter().try_for_each(|(key, value)| {
-            bucket.set(key, value).map_err(storage_write_error).map(|_| ())
+            bucket
+                .set(key, value)
+                .map_err(storage_write_error)
+                .map(|_| ())
         })?;
 
         let mut internal_sm = Self { db: db.clone() };
@@ -289,8 +292,7 @@ impl Store {
     pub fn last_log_id(&self) -> StorageResult<Option<LogId<NodeId>>> {
         // Get the last log id from the key-value store. Try to deserialize it. Otherwise, return
         // the default.
-        self
-            .db
+        self.db
             .bucket::<Integer, String>(Some("log"))
             .map_err(logs_read_error)?
             .last()
@@ -302,8 +304,8 @@ impl Store {
                         serde_json::from_str::<Entry<TypeConfig>>(
                             &x.value::<String>().map_err(logs_read_error)?,
                         )
-                            .map_err(logs_read_error)?
-                            .log_id,
+                        .map_err(logs_read_error)?
+                        .log_id,
                     ))
                 },
             )
@@ -359,7 +361,7 @@ impl RaftLogReader<TypeConfig> for Store {
                         .value::<String>()
                         .map_err(logs_read_error)?,
                 )
-                    .map_err(logs_read_error)
+                .map_err(logs_read_error)
             })
             .collect()
     }
@@ -441,10 +443,13 @@ impl RaftStorage<TypeConfig> for Store {
         let mut batch = kv::Batch::<Integer, String>::new();
 
         // Serialize the entries and add them to the batch.
-        entries.iter().try_for_each(|entry| {
-            let serialized_entry = serde_json::to_string(entry)?;
-            batch.set(&Integer::from(entry.log_id.index), &serialized_entry)
-        }).map_err(storage_write_error)?;
+        entries
+            .iter()
+            .try_for_each(|entry| {
+                let serialized_entry = serde_json::to_string(entry)?;
+                batch.set(&Integer::from(entry.log_id.index), &serialized_entry)
+            })
+            .map_err(storage_write_error)?;
 
         // Insert the batch into the log bucket.
         self.db
@@ -524,28 +529,31 @@ impl RaftStorage<TypeConfig> for Store {
         let mut state_machine = self.sm.write().await;
 
         // Iterate over the entries and apply them to the state machine.
-        entries.iter().map(|entry| {
-            tracing::debug!(%entry.log_id, "Replicating entry to state machine");
+        entries
+            .iter()
+            .map(|entry| {
+                tracing::debug!(%entry.log_id, "Replicating entry to state machine");
 
-            state_machine.set_last_applied_log(entry.log_id)?;
+                state_machine.set_last_applied_log(entry.log_id)?;
 
-            match entry.payload {
-                EntryPayload::Blank => Ok(Response { value: None }),
-                EntryPayload::Normal(ref request) => {
-                    state_machine.set(request.key.clone(), request.value.clone())?;
-                    Ok(Response {
-                        value: Some(request.value.clone()),
-                    })
+                match entry.payload {
+                    EntryPayload::Blank => Ok(Response { value: None }),
+                    EntryPayload::Normal(ref request) => {
+                        state_machine.set(request.key.clone(), request.value.clone())?;
+                        Ok(Response {
+                            value: Some(request.value.clone()),
+                        })
+                    }
+                    EntryPayload::Membership(ref membership) => {
+                        state_machine.set_last_membership(StoredMembership::new(
+                            Some(entry.log_id),
+                            membership.clone(),
+                        ))?;
+                        Ok(Response { value: None })
+                    }
                 }
-                EntryPayload::Membership(ref membership) => {
-                    state_machine.set_last_membership(StoredMembership::new(
-                        Some(entry.log_id),
-                        membership.clone(),
-                    ))?;
-                    Ok(Response { value: None })
-                }
-            }
-        }).collect()
+            })
+            .collect()
     }
 
     async fn get_snapshot_builder(&mut self) -> Self::SnapshotBuilder {
